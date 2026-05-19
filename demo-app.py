@@ -25,3 +25,17 @@ def lookup():
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=8080)
+# new lines
+# --- demo: deliberate vulnerabilities ---
+API_PASSWORD = "Sup3rSecret!2024"
+
+@app.route("/admin")
+def admin_login():
+    pw = request.args.get("pw", "")
+    return "ok" if pw == API_PASSWORD else "denied"
+
+@app.route("/files")
+def list_files():
+    import subprocess
+    d = request.args.get("dir", ".")
+    return subprocess.check_output("ls " + d, shell=True)
