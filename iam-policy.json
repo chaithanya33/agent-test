@@ -1,0 +1,68 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "BedrockInvokePilotModels",
+      "Effect": "Allow",
+      "Action": [
+        "bedrock:InvokeModel",
+        "bedrock:InvokeModelWithResponseStream"
+      ],
+      "Resource": [
+        "arn:aws:bedrock:*::foundation-model/anthropic.claude-3-5-haiku-*",
+        "arn:aws:bedrock:*::foundation-model/anthropic.claude-3-5-sonnet-*"
+      ]
+    },
+    {
+      "Sid": "DynamoDBFindingsTable",
+      "Effect": "Allow",
+      "Action": [
+        "dynamodb:PutItem",
+        "dynamodb:UpdateItem",
+        "dynamodb:GetItem",
+        "dynamodb:Query",
+        "dynamodb:BatchWriteItem"
+      ],
+      "Resource": "arn:aws:dynamodb:*:*:table/secure-ecr-findings"
+    },
+    {
+      "Sid": "ECRLoginAndPush",
+      "Effect": "Allow",
+      "Action": [
+        "ecr:GetAuthorizationToken",
+        "ecr:BatchCheckLayerAvailability",
+        "ecr:CompleteLayerUpload",
+        "ecr:InitiateLayerUpload",
+        "ecr:PutImage",
+        "ecr:UploadLayerPart",
+        "ecr:DescribeRepositories",
+        "ecr:DescribeImages"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "KMSSignForCosign",
+      "Effect": "Allow",
+      "Action": [
+        "kms:Sign",
+        "kms:Verify",
+        "kms:GetPublicKey",
+        "kms:DescribeKey"
+      ],
+      "Resource": "arn:aws:kms:*:*:key/*",
+      "Condition": {
+        "StringEquals": { "aws:ResourceTag/purpose": "secure-ecr-cosign" }
+      }
+    },
+    {
+      "Sid": "CloudWatchLogsForDebug",
+      "Effect": "Allow",
+      "Action": [
+        "logs:CreateLogGroup",
+        "logs:CreateLogStream",
+        "logs:PutLogEvents"
+      ],
+      "Resource": "arn:aws:logs:*:*:log-group:/aws/secure-ecr-agent/*"
+    }
+  ]
+}

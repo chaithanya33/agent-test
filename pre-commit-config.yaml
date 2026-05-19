@@ -1,0 +1,104 @@
+# Place this file at <repo>/.pre-commit-config.yaml
+# Install: pipx install pre-commit && pre-commit install
+# Manually run all hooks: pre-commit run --all-files
+
+repos:
+  # ---------- Secrets ----------
+  - repo: https://github.com/gitleaks/gitleaks
+    rev: v8.18.4
+    hooks:
+      - id: gitleaks
+
+  # ---------- General hygiene ----------
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v4.6.0
+    hooks:
+      - id: check-merge-conflict
+      - id: check-added-large-files
+        args: ['--maxkb=1024']
+      - id: end-of-file-fixer
+      - id: trailing-whitespace
+      - id: check-yaml
+      - id: check-json
+
+  # ---------- Fast SAST (all languages) ----------
+  - repo: https://github.com/semgrep/semgrep
+    rev: v1.86.0
+    hooks:
+      - id: semgrep
+        args:
+          - "--config=p/ci"
+          - "--config=p/security-audit"
+          - "--error"
+          - "--quiet"
+          - "--exclude=.git"
+
+  # ---------- Python ----------
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.6.9
+    hooks:
+      - id: ruff
+        args: [--fix, --exit-non-zero-on-fix]
+
+  - repo: https://github.com/PyCQA/bandit
+    rev: 1.7.10
+    hooks:
+      - id: bandit
+        args: ["-q", "-r", "-iii", "-ll"]
+        files: \.py$
+
+  # ---------- Node / TypeScript ----------
+  - repo: local
+    hooks:
+      - id: npm-audit
+        name: npm audit (high+)
+        entry: bash -c 'if [ -f package-lock.json ]; then npm audit --audit-level=high; fi'
+        language: system
+        files: package-lock\.json$
+        pass_filenames: false
+
+      - id: eslint-security
+        name: eslint security plugin
+        entry: bash -c 'if [ -f package.json ] && [ -d node_modules ]; then npx --no-install eslint --plugin security --no-eslintrc --rule "security/detect-eval-with-expression:error" $@ || exit 1; fi' --
+        language: system
+        files: \.(js|ts|jsx|tsx)$
+
+  # ---------- Java ----------
+  - repo: local
+    hooks:
+      - id: mvn-dep-check
+        name: maven dependency-check (fast)
+        entry: bash -c 'if [ -f pom.xml ]; then mvn -B -q org.owasp:dependency-check-maven:check -DfailBuildOnCVSS=9 -Dformats=JSON -DskipProvidedScope=true || exit 1; fi'
+        language: system
+        files: (pom\.xml|.*\.java)$
+        pass_filenames: false
+
+  # ---------- .NET ----------
+  - repo: local
+    hooks:
+      - id: dotnet-vulnerable-packages
+        name: dotnet list package --vulnerable
+        entry: bash -c 'if ls *.sln *.csproj 2>/dev/null | head -1 > /dev/null; then out=$(dotnet list package --vulnerable --include-transitive 2>&1); echo "$out"; echo "$out" | grep -E "(High|Critical)" && exit 1 || exit 0; fi'
+        language: system
+        files: \.(cs|csproj|sln|fsproj)$
+        pass_filenames: false
+
+      - id: security-code-scan
+        name: SecurityCodeScan analyzer (info)
+        entry: bash -c 'echo "SecurityCodeScan runs as a Roslyn analyzer in build; ensure <PackageReference Include=\"SecurityCodeScan.VS2019\" /> is in your csproj." ; exit 0'
+        language: system
+        files: \.csproj$
+        pass_filenames: false
+
+  # ---------- Dockerfile lint ----------
+  - repo: https://github.com/hadolint/hadolint
+    rev: v2.13.0-beta
+    hooks:
+      - id: hadolint-docker
+        files: Dockerfile.*
+
+# Notes:
+#  * The mvn / npm / dotnet hooks degrade gracefully if the toolchain isn't present
+#    locally; they re-run cleanly inside CI.
+#  * Developers can bypass with `git commit --no-verify`. Layer 2 (CI) is the
+#    mandatory backstop.
