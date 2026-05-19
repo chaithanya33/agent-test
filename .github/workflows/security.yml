@@ -1,0 +1,253 @@
+# Place at <repo>/.github/workflows/security.yml
+# Required repo variables (Settings → Variables → Actions):
+#   AWS_ROLE_ARN, AWS_REGION, ECR_REPO, KMS_KEY_ID,
+#   DDB_TABLE, BEDROCK_MODEL_HAIKU, BEDROCK_MODEL_SONNET
+# Required environment: `ecr-push` with required reviewers (Settings → Environments)
+
+name: Secure-ECR Agent
+
+on:
+  pull_request:
+    branches: [main, master]
+  push:
+    branches: [main, master]
+
+permissions:
+  id-token: write          # GitHub OIDC -> AWS
+  contents: read
+  pull-requests: write     # post PR comments + suggestions
+  security-events: write   # upload SARIF to Code Scanning
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # ---------------------------------------------------------------
+  # LAYER 2 — Static analysis, dependency audits, secret scan
+  # ---------------------------------------------------------------
+  sast:
+    name: SAST (Semgrep)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }
+
+      - uses: returntocorp/semgrep-action@v1
+        with:
+          config: >-
+            p/ci
+            p/security-audit
+            p/owasp-top-ten
+            p/dotnet
+            p/javascript
+            p/typescript
+            p/python
+            p/java
+          generateSarif: true
+
+      - uses: actions/upload-artifact@v4
+        with: { name: semgrep-sarif, path: semgrep.sarif }
+
+  sca:
+    name: SCA (deps audit, per language)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # ---------- Python ----------
+      - name: pip-audit
+        if: hashFiles('**/requirements*.txt', '**/pyproject.toml', '**/poetry.lock') != ''
+        run: |
+          pipx install pip-audit
+          pip-audit -r requirements.txt --format json --output pip-audit.json || true
+
+      # ---------- Node / TypeScript ----------
+      - uses: actions/setup-node@v4
+        if: hashFiles('**/package-lock.json') != ''
+        with: { node-version: '20' }
+      - name: npm audit
+        if: hashFiles('**/package-lock.json') != ''
+        run: npm audit --audit-level=moderate --json > npm-audit.json || true
+
+      # ---------- Java ----------
+      - uses: actions/setup-java@v4
+        if: hashFiles('**/pom.xml', '**/build.gradle*') != ''
+        with: { distribution: temurin, java-version: '21' }
+      - name: OWASP Dependency-Check (Maven)
+        if: hashFiles('**/pom.xml') != ''
+        run: mvn -B org.owasp:dependency-check-maven:check -Dformats=JSON -DfailBuildOnCVSS=11
+      - name: OWASP Dependency-Check (Gradle)
+        if: hashFiles('**/build.gradle*') != ''
+        run: ./gradlew dependencyCheckAnalyze --info || true
+
+      # ---------- .NET ----------
+      - uses: actions/setup-dotnet@v4
+        if: hashFiles('**/*.csproj', '**/*.sln', '**/*.fsproj') != ''
+        with: { dotnet-version: '8.0.x' }
+      - name: dotnet vulnerable packages
+        if: hashFiles('**/*.csproj', '**/*.sln') != ''
+        run: |
+          dotnet restore
+          dotnet list package --vulnerable --include-transitive > dotnet-vuln.txt || true
+          cat dotnet-vuln.txt
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sca-results
+          path: |
+            pip-audit.json
+            npm-audit.json
+            target/dependency-check-report.json
+            build/reports/dependency-check-report.json
+            dotnet-vuln.txt
+
+  secrets:
+    name: Secrets (gitleaks)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }
+      - uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITLEAKS_ENABLE_COMMENTS: 'true'
+
+  # ---------------------------------------------------------------
+  # LLM AGENT — triage + suggested fixes via Bedrock
+  # ---------------------------------------------------------------
+  agent:
+    name: LLM Triage (Claude on Bedrock)
+    needs: [sast, sca, secrets]
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region:     ${{ vars.AWS_REGION }}
+
+      - uses: actions/download-artifact@v4
+        with: { path: ./scanner-out }
+
+      - name: Compute PR diff
+        run: git diff origin/${{ github.base_ref }}...HEAD > pr.diff
+
+      - uses: actions/setup-python@v5
+        with: { python-version: '3.12' }
+      - run: pip install boto3 requests
+
+      - name: Run agent
+        env:
+          GITHUB_TOKEN:           ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY:      ${{ github.repository }}
+          GITHUB_PR_NUMBER:       ${{ github.event.pull_request.number }}
+          AWS_REGION:             ${{ vars.AWS_REGION }}
+          BEDROCK_MODEL_HAIKU:    ${{ vars.BEDROCK_MODEL_HAIKU }}
+          BEDROCK_MODEL_SONNET:   ${{ vars.BEDROCK_MODEL_SONNET }}
+          DDB_TABLE:              ${{ vars.DDB_TABLE }}
+        run: python .github/scripts/agent.py
+
+  # ---------------------------------------------------------------
+  # LAYER 3 — Build image, scan, generate SBOM
+  # ---------------------------------------------------------------
+  build-and-scan:
+    name: Build + Trivy/Grype/Syft
+    needs: [sast, sca, secrets]
+    runs-on: ubuntu-latest
+    outputs:
+      image-tag: ${{ steps.tag.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region:     ${{ vars.AWS_REGION }}
+
+      - id: tag
+        run: echo "tag=$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: hadolint
+        uses: hadolint/hadolint-action@v3.1.0
+        with: { dockerfile: Dockerfile }
+
+      - name: Build image
+        run: docker build -t local/app:${{ steps.tag.outputs.tag }} .
+
+      - name: Trivy (gate)
+        uses: aquasecurity/trivy-action@0.24.0
+        with:
+          image-ref: local/app:${{ steps.tag.outputs.tag }}
+          format: sarif
+          output: trivy.sarif
+          severity: CRITICAL,HIGH
+          exit-code: '1'      # FAIL the job on Critical/High → blocks ECR push
+
+      - name: Grype (second opinion, non-blocking)
+        uses: anchore/scan-action@v4
+        with:
+          image: local/app:${{ steps.tag.outputs.tag }}
+          fail-build: false
+          severity-cutoff: high
+          output-format: sarif
+
+      - name: Syft SBOM
+        uses: anchore/sbom-action@v0
+        with:
+          image: local/app:${{ steps.tag.outputs.tag }}
+          format: cyclonedx-json
+          output-file: sbom.json
+
+      - uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with: { sarif_file: trivy.sarif }
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: image-scan
+          path: |
+            trivy.sarif
+            sbom.json
+
+  # ---------------------------------------------------------------
+  # SIGN + PUSH — only on main, gated by manual approval
+  # ---------------------------------------------------------------
+  sign-and-push:
+    name: Cosign + push to ECR
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: [build-and-scan]
+    runs-on: ubuntu-latest
+    environment: ecr-push      # ← requires reviewer click in Settings → Environments
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region:     ${{ vars.AWS_REGION }}
+
+      - uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Rebuild + tag for ECR
+        run: |
+          docker build -t ${{ vars.ECR_REPO }}:${{ needs.build-and-scan.outputs.image-tag }} .
+          docker tag ${{ vars.ECR_REPO }}:${{ needs.build-and-scan.outputs.image-tag }} \
+                     ${{ vars.ECR_REPO }}:latest
+
+      - uses: sigstore/cosign-installer@v3
+      - name: Sign with KMS
+        env:
+          COSIGN_EXPERIMENTAL: '1'
+        run: |
+          cosign sign --yes \
+            --key awskms:///${{ vars.KMS_KEY_ID }} \
+            ${{ vars.ECR_REPO }}:${{ needs.build-and-scan.outputs.image-tag }}
+
+      - name: Push
+        run: |
+          docker push ${{ vars.ECR_REPO }}:${{ needs.build-and-scan.outputs.image-tag }}
+          docker push ${{ vars.ECR_REPO }}:latest
