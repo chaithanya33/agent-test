@@ -1,7 +1,7 @@
 # Demo image for the Secure-ECR pilot.
 # Kept minimal so Trivy/Grype have a small surface to scan.
 
-FROM python:3.12-slim
+FROM gcr.io/distroless/python3-debian12:nonroot
 
 WORKDIR /app
 
