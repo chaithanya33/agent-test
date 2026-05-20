@@ -242,6 +242,11 @@ jobs:
           docker tag "${{ vars.ECR_REPO }}:${{ needs.build-and-scan.outputs.image-tag }}" \
                      "${{ vars.ECR_REPO }}:latest"
 
+       - name: Push
+        run: |
+          docker push ${{ vars.ECR_REPO }}:${{ needs.build-and-scan.outputs.image-tag }}
+          docker push ${{ vars.ECR_REPO }}:latest           
+
       - uses: sigstore/cosign-installer@v3
       - name: Sign with KMS
         env:
@@ -251,7 +256,4 @@ jobs:
             --key "awskms:///${{ vars.KMS_KEY_ID }}" \
            "${{ vars.ECR_REPO }}:${{ needs.build-and-scan.outputs.image-tag }}"
 
-      - name: Push
-        run: |
-          docker push ${{ vars.ECR_REPO }}:${{ needs.build-and-scan.outputs.image-tag }}
-          docker push ${{ vars.ECR_REPO }}:latest
+    
