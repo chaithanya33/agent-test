@@ -248,8 +248,8 @@ jobs:
           COSIGN_EXPERIMENTAL: '1'
         run: |
           cosign sign --yes \
-            --key awskms:///${{ vars.KMS_KEY_ID }} \
-            ${{ vars.ECR_REPO }}:${{ needs.build-and-scan.outputs.image-tag }}
+            --key "awskms:///${{ vars.KMS_KEY_ID }}" \
+           "${{ vars.ECR_REPO }}:${{ needs.build-and-scan.outputs.image-tag }}"
 
       - name: Push
         run: |
