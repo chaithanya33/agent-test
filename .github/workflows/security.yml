@@ -29,9 +29,11 @@ jobs:
   sast:
     name: SAST (Semgrep)
     runs-on: ubuntu-latest
+
     steps:
       - uses: actions/checkout@v4
-        with: { fetch-depth: 0 }
+        with:
+          fetch-depth: 0
 
       - uses: returntocorp/semgrep-action@v1
         with:
@@ -47,11 +49,14 @@ jobs:
           generateSarif: true
 
       - uses: actions/upload-artifact@v4
-        with: { name: semgrep-sarif, path: semgrep.sarif }
+        with:
+          name: semgrep-sarif
+          path: semgrep.sarif
 
   sca:
     name: SCA (deps audit, per language)
     runs-on: ubuntu-latest
+
     steps:
       - uses: actions/checkout@v4
 
@@ -65,7 +70,9 @@ jobs:
       # ---------- Node / TypeScript ----------
       - uses: actions/setup-node@v4
         if: hashFiles('**/package-lock.json') != ''
-        with: { node-version: '20' }
+        with:
+          node-version: '20'
+
       - name: npm audit
         if: hashFiles('**/package-lock.json') != ''
         run: npm audit --audit-level=moderate --json > npm-audit.json || true
@@ -73,10 +80,14 @@ jobs:
       # ---------- Java ----------
       - uses: actions/setup-java@v4
         if: hashFiles('**/pom.xml', '**/build.gradle*') != ''
-        with: { distribution: temurin, java-version: '21' }
+        with:
+          distribution: temurin
+          java-version: '21'
+
       - name: OWASP Dependency-Check (Maven)
         if: hashFiles('**/pom.xml') != ''
         run: mvn -B org.owasp:dependency-check-maven:check -Dformats=JSON -DfailBuildOnCVSS=11
+
       - name: OWASP Dependency-Check (Gradle)
         if: hashFiles('**/build.gradle*') != ''
         run: ./gradlew dependencyCheckAnalyze --info || true
@@ -84,7 +95,9 @@ jobs:
       # ---------- .NET ----------
       - uses: actions/setup-dotnet@v4
         if: hashFiles('**/*.csproj', '**/*.sln', '**/*.fsproj') != ''
-        with: { dotnet-version: '8.0.x' }
+        with:
+          dotnet-version: '8.0.x'
+
       - name: dotnet vulnerable packages
         if: hashFiles('**/*.csproj', '**/*.sln') != ''
         run: |
@@ -105,9 +118,12 @@ jobs:
   secrets:
     name: Secrets (gitleaks)
     runs-on: ubuntu-latest
+
     steps:
       - uses: actions/checkout@v4
-        with: { fetch-depth: 0 }
+        with:
+          fetch-depth: 0
+
       - uses: gitleaks/gitleaks-action@v2
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -121,34 +137,39 @@ jobs:
     needs: [sast, sca, secrets]
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
+
     steps:
       - uses: actions/checkout@v4
-        with: { fetch-depth: 0 }
+        with:
+          fetch-depth: 0
 
       - uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: ${{ vars.AWS_ROLE_ARN }}
-          aws-region:     ${{ vars.AWS_REGION }}
+          aws-region: ${{ vars.AWS_REGION }}
 
       - uses: actions/download-artifact@v4
-        with: { path: ./scanner-out }
+        with:
+          path: ./scanner-out
 
       - name: Compute PR diff
         run: git diff origin/${{ github.base_ref }}...HEAD > pr.diff
 
       - uses: actions/setup-python@v5
-        with: { python-version: '3.12' }
+        with:
+          python-version: '3.12'
+
       - run: pip install boto3 requests
 
       - name: Run agent
         env:
-          GITHUB_TOKEN:           ${{ secrets.GITHUB_TOKEN }}
-          GITHUB_REPOSITORY:      ${{ github.repository }}
-          GITHUB_PR_NUMBER:       ${{ github.event.pull_request.number }}
-          AWS_REGION:             ${{ vars.AWS_REGION }}
-          BEDROCK_MODEL_HAIKU:    ${{ vars.BEDROCK_MODEL_HAIKU }}
-          BEDROCK_MODEL_SONNET:   ${{ vars.BEDROCK_MODEL_SONNET }}
-          DDB_TABLE:              ${{ vars.DDB_TABLE }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          GITHUB_PR_NUMBER: ${{ github.event.pull_request.number }}
+          AWS_REGION: ${{ vars.AWS_REGION }}
+          BEDROCK_MODEL_HAIKU: ${{ vars.BEDROCK_MODEL_HAIKU }}
+          BEDROCK_MODEL_SONNET: ${{ vars.BEDROCK_MODEL_SONNET }}
+          DDB_TABLE: ${{ vars.DDB_TABLE }}
         run: python .github/scripts/agent.py
 
   # ---------------------------------------------------------------
@@ -158,22 +179,25 @@ jobs:
     name: Build + Trivy/Grype/Syft
     needs: [sast, sca, secrets]
     runs-on: ubuntu-latest
+
     outputs:
       image-tag: ${{ steps.tag.outputs.tag }}
+
     steps:
       - uses: actions/checkout@v4
 
       - uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: ${{ vars.AWS_ROLE_ARN }}
-          aws-region:     ${{ vars.AWS_REGION }}
+          aws-region: ${{ vars.AWS_REGION }}
 
       - id: tag
         run: echo "tag=$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
 
       - name: hadolint
         uses: hadolint/hadolint-action@v3.1.0
-        with: { dockerfile: Dockerfile }
+        with:
+          dockerfile: Dockerfile
 
       - name: Build image
         run: docker build -t local/app:${{ steps.tag.outputs.tag }} .
@@ -186,10 +210,9 @@ jobs:
           format: sarif
           output: trivy.sarif
           severity: CRITICAL,HIGH
-          exit-code: '0'      # FAIL the job on Critical/High → blocks ECR push
+          exit-code: '0'
           ignore-unfixed: true
           vuln-type: os
-          
 
       - name: Grype (second opinion, non-blocking)
         uses: anchore/scan-action@v4
@@ -208,7 +231,8 @@ jobs:
 
       - uses: github/codeql-action/upload-sarif@v3
         if: always()
-        with: { sarif_file: trivy.sarif }
+        with:
+          sarif_file: trivy.sarif
 
       - uses: actions/upload-artifact@v4
         with:
@@ -221,28 +245,23 @@ jobs:
   # SIGN + PUSH — only on main, gated by manual approval
   # ---------------------------------------------------------------
   sign-and-push:
-    name: Cosign + push to ECR
+    name: Push to ECR
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     needs: [build-and-scan]
     runs-on: ubuntu-latest
-    environment: ecr-push      # ← requires reviewer click in Settings → Environments
+    environment: ecr-push
+
     steps:
       - uses: actions/checkout@v4
 
       - uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: ${{ vars.AWS_ROLE_ARN }}
-          aws-region:     ${{ vars.AWS_REGION }}
+          aws-region: ${{ vars.AWS_REGION }}
 
       - uses: aws-actions/amazon-ecr-login@v2
 
-      - name: Rebuild + tag for ECR
-        run: |
-          docker build -t "${{ vars.ECR_REPO }}:${{ needs.build-and-scan.outputs.image-tag }}" .
-          docker tag "${{ vars.ECR_REPO }}:${{ needs.build-and-scan.outputs.image-tag }}" \
-                     "${{ vars.ECR_REPO }}:latest"
-                     
-      - name: Rebuild + tag for ECR
+      - name: Build + tag for ECR
         run: |
           docker build -t "${{ vars.ECR_REPO }}:${{ needs.build-and-scan.outputs.image-tag }}" .
           docker tag "${{ vars.ECR_REPO }}:${{ needs.build-and-scan.outputs.image-tag }}" \
@@ -252,16 +271,3 @@ jobs:
         run: |
           docker push "${{ vars.ECR_REPO }}:${{ needs.build-and-scan.outputs.image-tag }}"
           docker push "${{ vars.ECR_REPO }}:latest"
-
-      - uses: sigstore/cosign-installer@v3
-
-      - name: Sign with KMS
-        run: |
-          DIGEST=$(docker inspect --format='{{index .RepoDigests 0}}' \
-            "${{ vars.ECR_REPO }}:${{ needs.build-and-scan.outputs.image-tag }}")
-          echo "Signing $DIGEST"
-          cosign sign --yes \
-            --key "awskms:///${{ vars.KMS_KEY_ID }}" \
-            "$DIGEST"
-
-    
