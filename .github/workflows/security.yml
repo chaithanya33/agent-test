@@ -241,19 +241,27 @@ jobs:
           docker build -t "${{ vars.ECR_REPO }}:${{ needs.build-and-scan.outputs.image-tag }}" .
           docker tag "${{ vars.ECR_REPO }}:${{ needs.build-and-scan.outputs.image-tag }}" \
                      "${{ vars.ECR_REPO }}:latest"
-
-       - name: Push
+                     
+      - name: Rebuild + tag for ECR
         run: |
-          docker push ${{ vars.ECR_REPO }}:${{ needs.build-and-scan.outputs.image-tag }}
-          docker push ${{ vars.ECR_REPO }}:latest           
+          docker build -t "${{ vars.ECR_REPO }}:${{ needs.build-and-scan.outputs.image-tag }}" .
+          docker tag "${{ vars.ECR_REPO }}:${{ needs.build-and-scan.outputs.image-tag }}" \
+                     "${{ vars.ECR_REPO }}:latest"
+
+      - name: Push to ECR
+        run: |
+          docker push "${{ vars.ECR_REPO }}:${{ needs.build-and-scan.outputs.image-tag }}"
+          docker push "${{ vars.ECR_REPO }}:latest"
 
       - uses: sigstore/cosign-installer@v3
+
       - name: Sign with KMS
-        env:
-          COSIGN_EXPERIMENTAL: '1'
         run: |
+          DIGEST=$(docker inspect --format='{{index .RepoDigests 0}}' \
+            "${{ vars.ECR_REPO }}:${{ needs.build-and-scan.outputs.image-tag }}")
+          echo "Signing $DIGEST"
           cosign sign --yes \
             --key "awskms:///${{ vars.KMS_KEY_ID }}" \
-           "${{ vars.ECR_REPO }}:${{ needs.build-and-scan.outputs.image-tag }}"
+            "$DIGEST"
 
     
